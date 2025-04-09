@@ -1,0 +1,5 @@
+dist/*
+compile.bat
+openCMD.bat
+build/*
+__pycache__/*
