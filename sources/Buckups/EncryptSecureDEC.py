@@ -7,7 +7,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
-from Crypto.Protocol.KDF import PBKDF2
 import lzma
 
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
@@ -100,30 +99,37 @@ def encrypt():
     with open(file_path, 'rb') as f:
         plaintext = f.read()
 
-    salt = get_random_bytes(16)
-    key = PBKDF2(password, salt, dkLen=32, count=100_000)
-    nonce = get_random_bytes(12)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    key = hashlib.sha256(password.encode()).digest()
+    iv = get_random_bytes(16)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    padded = plaintext + bytes([16 - len(plaintext) % 16]) * (16 - len(plaintext) % 16)
+    ciphertext = cipher.encrypt(padded)
 
     encrypted_path = file_path + ".vdec"
     file_hash = hashlib.sha256(ciphertext).hexdigest()
     username = getpass.getuser()
 
+    # ===== 修正開始 =====
+    BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
     try:
+        # 既存ファイルからチェーンを読み込む
         with lzma.open(encrypted_path, 'rb') as f:
             data = f.read()
         split_index = data.index(BLOCKCHAIN_HEADER)
+        iv_and_cipher = data[:split_index]
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
         blockchain = Blockchain.from_json(chain_json)
     except:
+        # 初回暗号化 or ブロックチェーンがない場合
+        iv_and_cipher = iv + ciphertext
         blockchain = Blockchain()
+    # ===== 修正終了 =====
 
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Encrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
     with lzma.open(encrypted_path, 'wb') as f:
-        f.write(salt + nonce + ciphertext + tag)
+        f.write(iv + ciphertext)
         f.write(BLOCKCHAIN_HEADER)
         f.write(blockchain.to_json().encode('utf-8'))
 
@@ -140,38 +146,45 @@ def decrypt():
         data = f.read()
 
     try:
+        BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
+        iv = data[:16]
         split_index = data.index(BLOCKCHAIN_HEADER)
-        crypto_data = data[:split_index]
+        ciphertext = data[16:split_index]
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
         blockchain = Blockchain.from_json(chain_json)
-
-        salt = crypto_data[:16]
-        nonce = crypto_data[16:28]
-        tag = crypto_data[-16:]
-        ciphertext = crypto_data[28:-16]
     except Exception:
         messagebox.showerror("エラー", "ファイル形式が不正です")
         return
 
-    key = PBKDF2(password, salt, dkLen=32, count=100_000)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    try:
-        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-    except ValueError:
-        messagebox.showerror("エラー", "復号失敗：パスワードが間違っているか、ファイルが改ざんされています。")
+    file_hash = hashlib.sha256(ciphertext).hexdigest()
+    if blockchain.chain[-1].file_hash != file_hash:
+        messagebox.showwarning("警告", "ファイルの改ざんの可能性があります！")
+    else:
+        messagebox.showinfo("整合性確認", "改ざんなし。整合性確認済み")
+
+    key = hashlib.sha256(password.encode()).digest()
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(ciphertext)
+
+    # パディング検証
+    padding_len = decrypted[-1]
+    if padding_len > 16 or padding_len == 0 or decrypted[-padding_len:] != bytes([padding_len]) * padding_len:
+        messagebox.showerror("エラー", "パスワードが正しくないか、ファイルが破損しています。")
         return
 
+    unpadded = decrypted[:-padding_len]
     output_file = encrypted_path.replace(".vdec", "_decrypted")
     with open(output_file, 'wb') as f:
-        f.write(plaintext)
+        f.write(unpadded)
 
+    # ✅ 復号後のレコードを追記
     username = getpass.getuser()
-    file_hash = hashlib.sha256(ciphertext).hexdigest()
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Decrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
+    # 🔄 更新されたブロックチェーンを書き戻す
     with lzma.open(encrypted_path, 'wb') as f:
-        f.write(salt + nonce + ciphertext + tag)
+        f.write(iv + ciphertext)
         f.write(BLOCKCHAIN_HEADER)
         f.write(blockchain.to_json().encode('utf-8'))
 
