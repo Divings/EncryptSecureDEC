@@ -6,6 +6,9 @@ Features
 Encrypt files with AES encryption algorithm
 Decrypt encrypted files
 User-friendly GUI interface
+
+The source code of this repository is publicly available for reference, but usage, modification, and redistribution are prohibited. For the use of the software itself (binary), please follow the EULA separately.
+
 Installation
 Clone the repository:
 
