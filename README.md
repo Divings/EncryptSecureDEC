@@ -28,4 +28,4 @@ Contributing
 Contributions are welcome! Please feel free to submit pull requests or open issues if you encounter any problems.
 
 License
-This software is released under the MIT License.
+This software is currently provided under a proprietary license. The previous version was under the MIT license, but all versions after April 12, 2025, will have restrictions on commercial use, redistribution, and modification.

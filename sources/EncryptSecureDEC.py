@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Innovation Craft Inc. All Rights Reserved.
+# 本ソフトウェアはプロプライエタリライセンスに基づき提供されています。
+
 import os
 import json
 import hashlib
