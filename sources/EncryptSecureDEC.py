@@ -12,6 +12,8 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
 import lzma
+import rsa_signer
+rsa_signer.generate_keys()
 
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
 
@@ -199,6 +201,25 @@ def verify_blockchain():
     else:
         messagebox.showerror("エラー", "ブロックチェーンに不整合があります。")
 
+def sign_current_file():
+    file_path = filedialog.askopenfilename(title="署名するファイルを選択してください")
+    if file_path:
+        try:
+            rsa_signer.sign_file(file_path)
+        except Exception as e:
+            messagebox.showerror("署名エラー", str(e))
+
+# ✅ 署名検証処理：ファイル選択して署名確認
+def verify_current_file_signature():
+    file_path = filedialog.askopenfilename(title="署名を検証するファイルを選択してください")
+    if file_path:
+        try:
+            rsa_signer.verify_file_signature(file_path)
+        
+        except Exception as e:
+            messagebox.showerror("検証エラー", str(e))
+
+
 # GUI構築
 window = tk.Tk()
 window.geometry("480x300")
@@ -229,6 +250,15 @@ decrypt_button.place(x=200, y=120)
 
 verify_button = tk.Button(window, text="ブロックチェーンの整合性確認", command=verify_blockchain, font=('', 14), width=30)
 verify_button.place(x=80, y=180)
+
+# 署名ボタン（例: x=80, y=220）
+sign_button = tk.Button(window, text="署名する", command=sign_current_file, font=('', 14), width=10)
+sign_button.place(x=80, y=220)
+
+# 署名検証ボタン（例: x=200, y=220）
+verify_sig_button = tk.Button(window, text="署名検証", command=verify_current_file_signature, font=('', 14), width=10)
+verify_sig_button.place(x=200, y=220)
+
 
 footer = ttk.Label(window, text='(C) Innovation Craft', background='#E0F2F1')
 footer.place(x=5, y=270)
