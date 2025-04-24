@@ -14,7 +14,17 @@ from Crypto.Protocol.KDF import PBKDF2
 import lzma
 import rsa_signer
 rsa_signer.generate_keys()
+import master_password_manager
+import sys
 
+if __name__ == "__main__":
+    password = master_password_manager.login_gui()
+    if password == -1:
+        sys.exit(-1)  # ❎ ユーザーがクローズボタンを押した場合 → 静かに終了
+    if password is None:
+        messagebox.showerror("認証失敗", "認証に失敗したためアプリケーションを終了します。")
+        sys.exit(-1)
+    
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
 
 class Block:
