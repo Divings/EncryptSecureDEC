@@ -2,6 +2,7 @@
 # 本ソフトウェアはプロプライエタリライセンスに基づき提供されています。
 
 import os
+import wavencode
 import json
 import hashlib
 import datetime
@@ -121,12 +122,11 @@ def encrypt():
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext)
 
-    encrypted_path = file_path + ".vdec"
     file_hash = hashlib.sha256(ciphertext).hexdigest()
     username = getpass.getuser()
 
     try:
-        with lzma.open(encrypted_path, 'rb') as f:
+        with lzma.open(file_path + ".vdec", 'rb') as f:
             data = f.read()
         split_index = data.index(BLOCKCHAIN_HEADER)
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
@@ -137,22 +137,43 @@ def encrypt():
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Encrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
-    with lzma.open(encrypted_path, 'wb') as f:
-        f.write(salt + nonce + ciphertext + tag)
-        f.write(BLOCKCHAIN_HEADER)
-        f.write(blockchain.to_json().encode('utf-8'))
+    # 暗号バイト列
+    encrypted_data = salt + nonce + ciphertext + tag
+    blockchain_data = BLOCKCHAIN_HEADER + blockchain.to_json().encode('utf-8')
+
+    if wav_output_var.get():
+        # WAV形式で保存
+        wav_bytes = wavencode.binary_to_wav_bytes(encrypted_data + blockchain_data)
+        encrypted_path = file_path + ".vdec.wav"
+        with open(encrypted_path, "wb") as f:
+            f.write(wav_bytes)
+    else:
+        # LZMA圧縮で.vdecに保存
+        encrypted_path = file_path + ".vdec"
+        with lzma.open(encrypted_path, 'wb') as f:
+            f.write(encrypted_data)
+            f.write(blockchain_data)
 
     messagebox.showinfo("完了", f"暗号化完了:\n{encrypted_path}")
 
 def decrypt():
-    encrypted_path = filedialog.askopenfilename(title="復号化する.vdecファイルを選択", filetypes=[("Encrypted Files", "*.vdec")])
+    encrypted_path = filedialog.askopenfilename(title="復号化する.vdecファイルを選択", filetypes=[("Encrypted Files", "*.vdec*")])
     if not encrypted_path:
         return
     password = password_entry.get()
     memo = memo_entry.get()
 
-    with lzma.open(encrypted_path, 'rb') as f:
-        data = f.read()
+    if encrypted_path.endswith(".wav"):
+        with open(encrypted_path, 'rb') as f:
+            wav_bytes = f.read()
+        try:
+            data = wavencode.wav_bytes_to_binary(wav_bytes)
+        except Exception:
+            messagebox.showerror("エラー", "WAVデータの復元に失敗しました")
+            return
+    else:
+        with lzma.open(encrypted_path, 'rb') as f:
+            data = f.read()
 
     try:
         split_index = data.index(BLOCKCHAIN_HEADER)
@@ -176,7 +197,7 @@ def decrypt():
         messagebox.showerror("エラー", "復号失敗：パスワードが間違っているか、ファイルが改ざんされています。")
         return
 
-    output_file = encrypted_path.replace(".vdec", "_decrypted")
+    output_file = encrypted_path.replace(".vdec.wav", "_decrypted").replace(".vdec", "_decrypted")
     with open(output_file, 'wb') as f:
         f.write(plaintext)
 
@@ -185,19 +206,37 @@ def decrypt():
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Decrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
-    with lzma.open(encrypted_path, 'wb') as f:
-        f.write(salt + nonce + ciphertext + tag)
-        f.write(BLOCKCHAIN_HEADER)
-        f.write(blockchain.to_json().encode('utf-8'))
+    if not encrypted_path.endswith(".wav"):
+        with lzma.open(encrypted_path, 'wb') as f:
+            f.write(salt + nonce + ciphertext + tag)
+            f.write(BLOCKCHAIN_HEADER)
+            f.write(blockchain.to_json().encode('utf-8'))
 
     messagebox.showinfo("完了", f"復号化完了:\n{output_file}")
 
 def verify_blockchain():
-    encrypted_path = filedialog.askopenfilename(title="確認する.vdecファイルを選択", filetypes=[("Encrypted Files", "*.vdec")])
+    encrypted_path = filedialog.askopenfilename(title="確認する.vdecファイルを選択", filetypes=[("Encrypted Files", "*.vdec*")])
     if not encrypted_path:
         return
-    with lzma.open(encrypted_path, 'rb') as f:
-        data = f.read()
+
+    # WAVファイルかどうかで処理を分岐
+    if encrypted_path.endswith(".wav"):
+        try:
+            with open(encrypted_path, 'rb') as f:
+                wav_bytes = f.read()
+            data = wavencode.wav_bytes_to_binary(wav_bytes)
+        except Exception:
+            messagebox.showerror("エラー", "WAVファイルからの復元に失敗しました")
+            return
+    else:
+        try:
+            with lzma.open(encrypted_path, 'rb') as f:
+                data = f.read()
+        except Exception:
+            messagebox.showerror("エラー", "ファイルの読み込みに失敗しました")
+            return
+
+    # ブロックチェーンデータを抽出して検証
     try:
         split_index = data.index(BLOCKCHAIN_HEADER)
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
@@ -229,7 +268,6 @@ def verify_current_file_signature():
         except Exception as e:
             messagebox.showerror("検証エラー", str(e))
 
-
 # GUI構築
 window = tk.Tk()
 window.geometry("480x300")
@@ -252,25 +290,27 @@ memo_label.place(x=20, y=70)
 memo_entry = tk.Entry(window, font=('', 14))
 memo_entry.place(x=130, y=70, width=300)
 
+# ✅ WAV形式チェックボックス追加
+wav_output_var = tk.BooleanVar(value=False)
+wav_checkbox = ttk.Checkbutton(window, text="WAV形式で保存する", variable=wav_output_var)
+wav_checkbox.place(x=130, y=100)
+
 encrypt_button = tk.Button(window, text="暗号化", command=encrypt, font=('', 14), width=10)
-encrypt_button.place(x=80, y=120)
+encrypt_button.place(x=80, y=140)
 
 decrypt_button = tk.Button(window, text="復号化", command=decrypt, font=('', 14), width=10)
-decrypt_button.place(x=200, y=120)
+decrypt_button.place(x=200, y=140)
 
 verify_button = tk.Button(window, text="ブロックチェーンの整合性確認", command=verify_blockchain, font=('', 14), width=30)
-verify_button.place(x=80, y=180)
+verify_button.place(x=80, y=200)
 
-# 署名ボタン（例: x=80, y=220）
 sign_button = tk.Button(window, text="署名する", command=sign_current_file, font=('', 14), width=10)
-sign_button.place(x=80, y=220)
+sign_button.place(x=80, y=240)
 
-# 署名検証ボタン（例: x=200, y=220）
 verify_sig_button = tk.Button(window, text="署名検証", command=verify_current_file_signature, font=('', 14), width=10)
-verify_sig_button.place(x=200, y=220)
-
+verify_sig_button.place(x=200, y=240)
 
 footer = ttk.Label(window, text='(C) Innovation Craft', background='#E0F2F1')
-footer.place(x=5, y=270)
+footer.place(x=5, y=275)
 
 window.mainloop()

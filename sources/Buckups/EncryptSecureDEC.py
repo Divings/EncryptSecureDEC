@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Innovation Craft Inc. All Rights Reserved.
+# 本ソフトウェアはプロプライエタリライセンスに基づき提供されています。
+
 import os
 import json
 import hashlib
@@ -7,8 +10,21 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import PBKDF2
 import lzma
+import rsa_signer
+rsa_signer.generate_keys()
+import master_password_manager
+import sys
 
+if __name__ == "__main__":
+    password = master_password_manager.login_gui()
+    if password == -1:
+        sys.exit(-1)  # ❎ ユーザーがクローズボタンを押した場合 → 静かに終了
+    if password is None:
+        messagebox.showerror("認証失敗", "認証に失敗したためアプリケーションを終了します。")
+        sys.exit(-1)
+    
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
 
 class Block:
@@ -99,37 +115,30 @@ def encrypt():
     with open(file_path, 'rb') as f:
         plaintext = f.read()
 
-    key = hashlib.sha256(password.encode()).digest()
-    iv = get_random_bytes(16)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    padded = plaintext + bytes([16 - len(plaintext) % 16]) * (16 - len(plaintext) % 16)
-    ciphertext = cipher.encrypt(padded)
+    salt = get_random_bytes(16)
+    key = PBKDF2(password, salt, dkLen=32, count=100_000)
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
 
     encrypted_path = file_path + ".vdec"
     file_hash = hashlib.sha256(ciphertext).hexdigest()
     username = getpass.getuser()
 
-    # ===== 修正開始 =====
-    BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
     try:
-        # 既存ファイルからチェーンを読み込む
         with lzma.open(encrypted_path, 'rb') as f:
             data = f.read()
         split_index = data.index(BLOCKCHAIN_HEADER)
-        iv_and_cipher = data[:split_index]
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
         blockchain = Blockchain.from_json(chain_json)
     except:
-        # 初回暗号化 or ブロックチェーンがない場合
-        iv_and_cipher = iv + ciphertext
         blockchain = Blockchain()
-    # ===== 修正終了 =====
 
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Encrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
     with lzma.open(encrypted_path, 'wb') as f:
-        f.write(iv + ciphertext)
+        f.write(salt + nonce + ciphertext + tag)
         f.write(BLOCKCHAIN_HEADER)
         f.write(blockchain.to_json().encode('utf-8'))
 
@@ -146,45 +155,38 @@ def decrypt():
         data = f.read()
 
     try:
-        BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
-        iv = data[:16]
         split_index = data.index(BLOCKCHAIN_HEADER)
-        ciphertext = data[16:split_index]
+        crypto_data = data[:split_index]
         chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
         blockchain = Blockchain.from_json(chain_json)
+
+        salt = crypto_data[:16]
+        nonce = crypto_data[16:28]
+        tag = crypto_data[-16:]
+        ciphertext = crypto_data[28:-16]
     except Exception:
         messagebox.showerror("エラー", "ファイル形式が不正です")
         return
 
-    file_hash = hashlib.sha256(ciphertext).hexdigest()
-    if blockchain.chain[-1].file_hash != file_hash:
-        messagebox.showwarning("警告", "ファイルの改ざんの可能性があります！")
-    else:
-        messagebox.showinfo("整合性確認", "改ざんなし。整合性確認済み")
-
-    key = hashlib.sha256(password.encode()).digest()
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted = cipher.decrypt(ciphertext)
-
-    # パディング検証
-    padding_len = decrypted[-1]
-    if padding_len > 16 or padding_len == 0 or decrypted[-padding_len:] != bytes([padding_len]) * padding_len:
-        messagebox.showerror("エラー", "パスワードが正しくないか、ファイルが破損しています。")
+    key = PBKDF2(password, salt, dkLen=32, count=100_000)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    try:
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    except ValueError:
+        messagebox.showerror("エラー", "復号失敗：パスワードが間違っているか、ファイルが改ざんされています。")
         return
 
-    unpadded = decrypted[:-padding_len]
     output_file = encrypted_path.replace(".vdec", "_decrypted")
     with open(output_file, 'wb') as f:
-        f.write(unpadded)
+        f.write(plaintext)
 
-    # ✅ 復号後のレコードを追記
     username = getpass.getuser()
+    file_hash = hashlib.sha256(ciphertext).hexdigest()
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Decrypt", file_hash, username, memo)
     blockchain.add_block(block)
 
-    # 🔄 更新されたブロックチェーンを書き戻す
     with lzma.open(encrypted_path, 'wb') as f:
-        f.write(iv + ciphertext)
+        f.write(salt + nonce + ciphertext + tag)
         f.write(BLOCKCHAIN_HEADER)
         f.write(blockchain.to_json().encode('utf-8'))
 
@@ -208,6 +210,25 @@ def verify_blockchain():
         messagebox.showinfo("確認", "ブロックチェーンは整合しています。")
     else:
         messagebox.showerror("エラー", "ブロックチェーンに不整合があります。")
+
+def sign_current_file():
+    file_path = filedialog.askopenfilename(title="署名するファイルを選択してください")
+    if file_path:
+        try:
+            rsa_signer.sign_file(file_path)
+        except Exception as e:
+            messagebox.showerror("署名エラー", str(e))
+
+# ✅ 署名検証処理：ファイル選択して署名確認
+def verify_current_file_signature():
+    file_path = filedialog.askopenfilename(title="署名を検証するファイルを選択してください")
+    if file_path:
+        try:
+            rsa_signer.verify_file_signature(file_path)
+        
+        except Exception as e:
+            messagebox.showerror("検証エラー", str(e))
+
 
 # GUI構築
 window = tk.Tk()
@@ -239,6 +260,15 @@ decrypt_button.place(x=200, y=120)
 
 verify_button = tk.Button(window, text="ブロックチェーンの整合性確認", command=verify_blockchain, font=('', 14), width=30)
 verify_button.place(x=80, y=180)
+
+# 署名ボタン（例: x=80, y=220）
+sign_button = tk.Button(window, text="署名する", command=sign_current_file, font=('', 14), width=10)
+sign_button.place(x=80, y=220)
+
+# 署名検証ボタン（例: x=200, y=220）
+verify_sig_button = tk.Button(window, text="署名検証", command=verify_current_file_signature, font=('', 14), width=10)
+verify_sig_button.place(x=200, y=220)
+
 
 footer = ttk.Label(window, text='(C) Innovation Craft', background='#E0F2F1')
 footer.place(x=5, y=270)
